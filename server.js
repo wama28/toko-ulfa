@@ -672,3 +672,5 @@ const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
     console.log(`Server Backend UD. ULFA berjalan di http://localhost:${PORT}`);
 });
+// Export untuk Vercel serverless
+module.exports = app;
