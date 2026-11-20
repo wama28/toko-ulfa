@@ -140,6 +140,7 @@ app.get('/api/produk/:id', async (req, res) => {
 app.post('/api/produk', upload.single('gambar'), async (req, res) => {
     const { nama, kategori, deskripsi } = req.body;
     const harga = Number(req.body.harga);
+    const harga_beli = req.body.harga_beli !== undefined ? Number(req.body.harga_beli) : 0;
     const stok = Number(req.body.stok);
     const gambar = ambilUrlGambar(req, req.file) || 'https://placehold.co/150';
 
@@ -148,10 +149,12 @@ app.post('/api/produk', upload.single('gambar'), async (req, res) => {
         if (req.file) hapusFile(gambar);
         throw httpError(400, 'Nama, kategori, harga (>= 0) dan stok (bilangan bulat >= 0) wajib diisi dengan benar');
     }
+    if (!Number.isFinite(harga_beli) || harga_beli < 0)
+        throw httpError(400, 'Harga beli harus berupa angka >= 0');
 
     const [result] = await db.query(
-        'INSERT INTO produk (nama, kategori, harga, stok, deskripsi, gambar) VALUES (?, ?, ?, ?, ?, ?)',
-        [nama.trim(), kategori.trim(), harga, stok, deskripsi || '-', gambar]
+        'INSERT INTO produk (nama, kategori, harga_beli, harga, stok, deskripsi, gambar) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [nama.trim(), kategori.trim(), harga_beli, harga, stok, deskripsi || '-', gambar]
     );
     res.status(201).json({ message: 'Produk berhasil ditambahkan', id: result.insertId });
 });
@@ -168,6 +171,7 @@ app.put('/api/produk/:id', upload.single('gambar'), async (req, res) => {
     const nama = req.body.nama ?? lama.nama;
     const kategori = req.body.kategori ?? lama.kategori;
     const harga = req.body.harga !== undefined ? Number(req.body.harga) : lama.harga;
+    const harga_beli = req.body.harga_beli !== undefined ? Number(req.body.harga_beli) : lama.harga_beli;
     const stok = req.body.stok !== undefined ? Number(req.body.stok) : lama.stok;
     const deskripsi = req.body.deskripsi ?? lama.deskripsi;
     const gambar = ambilUrlGambar(req, req.file) || lama.gambar;
@@ -176,10 +180,14 @@ app.put('/api/produk/:id', upload.single('gambar'), async (req, res) => {
         if (req.file) hapusFile(gambar);
         throw httpError(400, 'Harga atau stok tidak valid');
     }
+    if (!Number.isFinite(harga_beli) || harga_beli < 0) {
+        if (req.file) hapusFile(gambar);
+        throw httpError(400, 'Harga beli tidak valid');
+    }
 
     await db.query(
-        'UPDATE produk SET nama=?, kategori=?, harga=?, stok=?, deskripsi=?, gambar=? WHERE id=?',
-        [nama, kategori, harga, stok, deskripsi, gambar, id]
+        'UPDATE produk SET nama=?, kategori=?, harga_beli=?, harga=?, stok=?, deskripsi=?, gambar=? WHERE id=?',
+        [nama, kategori, harga_beli, harga, stok, deskripsi, gambar, id]
     );
     if (req.file) hapusFile(lama.gambar);
     res.json({ message: 'Produk berhasil diperbarui' });
@@ -236,6 +244,7 @@ app.post('/api/transaksi', async (req, res) => {
     const { items } = req.body;
     const metode = req.body.metode_pembayaran || 'Tunai';
     const noTransaksi = req.body.no_transaksi || 'TRX-' + Date.now();
+    const uang_diterima = req.body.uang_diterima !== undefined ? Number(req.body.uang_diterima) : null;
 
     if (!Array.isArray(items) || items.length === 0) throw httpError(400, 'Item transaksi tidak boleh kosong');
 
@@ -272,8 +281,8 @@ app.post('/api/transaksi', async (req, res) => {
         }
 
         const [trx] = await conn.query(
-            'INSERT INTO transaksi (no_transaksi, total_harga, metode_pembayaran) VALUES (?, ?, ?)',
-            [noTransaksi, total, metode]
+            'INSERT INTO transaksi (no_transaksi, total_harga, metode_pembayaran, uang_diterima, kembalian) VALUES (?, ?, ?, ?, ?)',
+            [noTransaksi, total, metode, uang_diterima, uang_diterima !== null ? Math.max(0, uang_diterima - total) : null]
         );
         await conn.query(
             'INSERT INTO detail_transaksi (transaksi_id, produk_id, jumlah, subtotal) VALUES ?',
@@ -281,11 +290,14 @@ app.post('/api/transaksi', async (req, res) => {
         );
 
         await conn.commit();
+        const kembalian = uang_diterima !== null ? Math.max(0, uang_diterima - total) : null;
         res.status(201).json({
             message: 'Transaksi berhasil disimpan & stok diperbarui!',
             id: trx.insertId,
             no_transaksi: noTransaksi,
-            total_harga: total
+            total_harga: total,
+            uang_diterima: uang_diterima,
+            kembalian: kembalian
         });
     } catch (err) {
         await conn.rollback();
@@ -382,6 +394,8 @@ app.get('/api', (req, res) => {
             'GET /api/dashboard/grafik?hari=7',
             'GET /api/laporan?dari=YYYY-MM-DD&sampai=YYYY-MM-DD',
             'GET /api/laporan/:id',
+            'DELETE /api/transaksi/:id',
+            'GET /api/laporan/export?dari=YYYY-MM-DD&sampai=YYYY-MM-DD',
             'GET /api/docs (Swagger UI)',
             'POST /api/auth/login',
             'GET /api/auth/me (Bearer)',
@@ -698,6 +712,79 @@ app.get('/api/laporan/:id', async (req, res) => {
         [req.params.id]
     );
     res.json({ ...trx[0], items });
+});
+
+// Ekspor laporan ke CSV: /api/laporan/export?dari=YYYY-MM-DD&sampai=YYYY-MM-DD
+app.get('/api/laporan/export', async (req, res) => {
+    const { dari, sampai } = req.query;
+    const where = [];
+    const params = [];
+    if (dari) { where.push('t.tanggal >= ?'); params.push(dari); }
+    if (sampai) { where.push('t.tanggal < ? + INTERVAL 1 DAY'); params.push(sampai); }
+
+    const [rows] = await db.query(
+        `SELECT t.no_transaksi, DATE_FORMAT(t.tanggal, '%Y-%m-%d %H:%i:%s') AS tanggal,
+                p.nama AS produk, d.jumlah, d.subtotal,
+                t.total_harga, t.metode_pembayaran,
+                t.uang_diterima, t.kembalian
+         FROM transaksi t
+         JOIN detail_transaksi d ON d.transaksi_id = t.id
+         JOIN produk p ON p.id = d.produk_id
+         ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+         ORDER BY t.tanggal DESC`,
+        params
+    );
+
+    // Buat CSV
+    const header = 'No Transaksi,Tanggal,Produk,Jumlah,Subtotal,Total,Metode,Uang Diterima,Kembalian';
+    const baris = rows.map(r =>
+        [r.no_transaksi, r.tanggal, `"${r.produk}"`, r.jumlah, r.subtotal,
+         r.total_harga, r.metode_pembayaran,
+         r.uang_diterima ?? '', r.kembalian ?? ''].join(',')
+    );
+    const csv = [header, ...baris].join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', 'attachment; filename="laporan.csv"');
+    res.send(csv);
+});
+
+// Void / batalkan transaksi: kembalikan stok dan hapus data
+app.delete('/api/transaksi/:id', async (req, res) => {
+    const { id } = req.params;
+    const conn = await db.getConnection();
+    try {
+        await conn.beginTransaction();
+
+        const [trx] = await conn.query('SELECT id, no_transaksi FROM transaksi WHERE id = ? FOR UPDATE', [id]);
+        if (trx.length === 0) throw httpError(404, 'Transaksi tidak ditemukan');
+
+        // Ambil detail item untuk kembalikan stok
+        const [items] = await conn.query(
+            'SELECT produk_id, jumlah FROM detail_transaksi WHERE transaksi_id = ?', [id]
+        );
+
+        // Kembalikan stok setiap produk
+        for (const item of items) {
+            await conn.query(
+                'UPDATE produk SET stok = stok + ? WHERE id = ?',
+                [item.jumlah, item.produk_id]
+            );
+        }
+
+        // Hapus transaksi (detail_transaksi terhapus otomatis via ON DELETE CASCADE)
+        await conn.query('DELETE FROM transaksi WHERE id = ?', [id]);
+        await conn.commit();
+
+        res.json({
+            message: `Transaksi ${trx[0].no_transaksi} berhasil dibatalkan dan stok dikembalikan`
+        });
+    } catch (err) {
+        await conn.rollback();
+        throw err;
+    } finally {
+        conn.release();
+    }
 });
 
 // =====================================================

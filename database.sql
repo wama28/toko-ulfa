@@ -47,3 +47,8 @@ CREATE TABLE IF NOT EXISTS pengeluaran (
     tanggal     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_pengeluaran_jumlah CHECK (jumlah > 0)
 ) ENGINE=InnoDB;
+
+-- Migrasi kolom baru (jalankan jika database sudah ada)
+-- ALTER TABLE produk ADD COLUMN harga_beli DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER kategori;
+-- ALTER TABLE transaksi ADD COLUMN uang_diterima DECIMAL(14,2) NULL AFTER metode_pembayaran;
+-- ALTER TABLE transaksi ADD COLUMN kembalian DECIMAL(14,2) NULL AFTER uang_diterima;
