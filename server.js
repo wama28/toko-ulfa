@@ -297,7 +297,53 @@ app.post('/api/transaksi', async (req, res) => {
 });
 
 // =====================================================
-// 3. DASHBOARD & LAPORAN
+// 3. PENGELUARAN
+// =====================================================
+app.get('/api/pengeluaran', async (req, res) => {
+    const { dari, sampai } = req.query;
+    const where = [];
+    const params = [];
+    if (dari) { where.push('tanggal >= ?'); params.push(dari); }
+    if (sampai) { where.push('tanggal < ? + INTERVAL 1 DAY'); params.push(sampai); }
+
+    const sql = 'SELECT * FROM pengeluaran' +
+        (where.length ? ' WHERE ' + where.join(' AND ') : '') +
+        ' ORDER BY tanggal DESC';
+    const [rows] = await db.query(sql, params);
+    res.json(rows);
+});
+
+app.post('/api/pengeluaran', async (req, res) => {
+    const { keterangan } = req.body;
+    const jumlah = Number(req.body.jumlah);
+    const tanggal = req.body.tanggal || null;
+
+    if (!keterangan || !keterangan.trim())
+        throw httpError(400, 'Keterangan wajib diisi');
+    if (!Number.isFinite(jumlah) || jumlah <= 0)
+        throw httpError(400, 'Jumlah harus berupa angka lebih dari 0');
+
+    const sql = tanggal
+        ? 'INSERT INTO pengeluaran (keterangan, jumlah, tanggal) VALUES (?, ?, ?)'
+        : 'INSERT INTO pengeluaran (keterangan, jumlah) VALUES (?, ?)';
+    const params = tanggal
+        ? [keterangan.trim(), jumlah, tanggal]
+        : [keterangan.trim(), jumlah];
+
+    const [result] = await db.query(sql, params);
+    res.status(201).json({ message: 'Pengeluaran berhasil dicatat', id: result.insertId });
+});
+
+app.delete('/api/pengeluaran/:id', async (req, res) => {
+    const { id } = req.params;
+    const [rows] = await db.query('SELECT id FROM pengeluaran WHERE id = ?', [id]);
+    if (rows.length === 0) throw httpError(404, 'Pengeluaran tidak ditemukan');
+    await db.query('DELETE FROM pengeluaran WHERE id = ?', [id]);
+    res.json({ message: 'Pengeluaran berhasil dihapus' });
+});
+
+// =====================================================
+// 4. DASHBOARD & LAPORAN
 // =====================================================
 app.get('/api/dashboard', async (req, res) => {
     const [[produk], [menipis], [hariIni]] = await Promise.all([
@@ -329,6 +375,9 @@ app.get('/api', (req, res) => {
             'PUT /api/produk/:id/stok',
             'GET /api/kategori',
             'POST /api/transaksi',
+            'GET /api/pengeluaran (filter: ?dari=YYYY-MM-DD&sampai=YYYY-MM-DD)',
+            'POST /api/pengeluaran',
+            'DELETE /api/pengeluaran/:id',
             'GET /api/dashboard',
             'GET /api/dashboard/grafik?hari=7',
             'GET /api/laporan?dari=YYYY-MM-DD&sampai=YYYY-MM-DD',

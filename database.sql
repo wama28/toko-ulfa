@@ -39,3 +39,11 @@ INSERT INTO produk (nama, kategori, harga, stok, deskripsi) VALUES
 ('Beras 5 Kg',     'Sembako',  68000, 40, '-'),
 ('Minyak Goreng 1L','Sembako', 17000, 25, '-'),
 ('Gula Pasir 1 Kg', 'Sembako', 16500,  4, '-');
+
+CREATE TABLE IF NOT EXISTS pengeluaran (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    keterangan  VARCHAR(255) NOT NULL,
+    jumlah      DECIMAL(14,2) NOT NULL,
+    tanggal     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT chk_pengeluaran_jumlah CHECK (jumlah > 0)
+) ENGINE=InnoDB;
