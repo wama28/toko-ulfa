@@ -701,19 +701,6 @@ app.get('/api/laporan', async (req, res) => {
     res.json(rows);
 });
 
-// Detail satu transaksi beserta barang yang dibeli
-app.get('/api/laporan/:id', async (req, res) => {
-    const [trx] = await db.query('SELECT * FROM transaksi WHERE id = ?', [req.params.id]);
-    if (trx.length === 0) throw httpError(404, 'Transaksi tidak ditemukan');
-    const [items] = await db.query(
-        `SELECT d.produk_id, p.nama, d.jumlah, d.subtotal
-         FROM detail_transaksi d JOIN produk p ON p.id = d.produk_id
-         WHERE d.transaksi_id = ?`,
-        [req.params.id]
-    );
-    res.json({ ...trx[0], items });
-});
-
 // Ekspor laporan ke CSV: /api/laporan/export?dari=YYYY-MM-DD&sampai=YYYY-MM-DD
 app.get('/api/laporan/export', async (req, res) => {
     const { dari, sampai } = req.query;
@@ -747,6 +734,19 @@ app.get('/api/laporan/export', async (req, res) => {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', 'attachment; filename="laporan.csv"');
     res.send(csv);
+});
+
+// Detail satu transaksi beserta barang yang dibeli
+app.get('/api/laporan/:id', async (req, res) => {
+    const [trx] = await db.query('SELECT * FROM transaksi WHERE id = ?', [req.params.id]);
+    if (trx.length === 0) throw httpError(404, 'Transaksi tidak ditemukan');
+    const [items] = await db.query(
+        `SELECT d.produk_id, p.nama, d.jumlah, d.subtotal
+         FROM detail_transaksi d JOIN produk p ON p.id = d.produk_id
+         WHERE d.transaksi_id = ?`,
+        [req.params.id]
+    );
+    res.json({ ...trx[0], items });
 });
 
 // Void / batalkan transaksi: kembalikan stok dan hapus data
