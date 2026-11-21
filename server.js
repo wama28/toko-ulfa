@@ -396,6 +396,9 @@ app.get('/api', (req, res) => {
             'GET /api/laporan/:id',
             'DELETE /api/transaksi/:id',
             'GET /api/laporan/export?dari=YYYY-MM-DD&sampai=YYYY-MM-DD',
+            'GET /api/keuangan/rekap?dari=YYYY-MM-DD&sampai=YYYY-MM-DD',
+            'GET /api/keuangan/grafik?hari=30',
+            'PUT /api/pengeluaran/:id',
             'GET /api/docs (Swagger UI)',
             'POST /api/auth/login',
             'GET /api/auth/me (Bearer)',
@@ -785,6 +788,105 @@ app.delete('/api/transaksi/:id', async (req, res) => {
     } finally {
         conn.release();
     }
+});
+
+// =====================================================
+// 5. KEUANGAN (Rekap, Laba/Rugi, Edit Pengeluaran)
+// =====================================================
+
+// Rekap keuangan: pemasukan vs pengeluaran per periode
+// GET /api/keuangan/rekap?dari=YYYY-MM-DD&sampai=YYYY-MM-DD
+app.get('/api/keuangan/rekap', async (req, res) => {
+    const { dari, sampai } = req.query;
+    const whereT = [], whereP = [], paramsT = [], paramsP = [];
+
+    if (dari) {
+        whereT.push('tanggal >= ?'); paramsT.push(dari);
+        whereP.push('tanggal >= ?'); paramsP.push(dari);
+    }
+    if (sampai) {
+        whereT.push('tanggal < ? + INTERVAL 1 DAY'); paramsT.push(sampai);
+        whereP.push('tanggal < ? + INTERVAL 1 DAY'); paramsP.push(sampai);
+    }
+
+    const [[pemasukanRow], [pengeluaranRow]] = await Promise.all([
+        db.query(
+            `SELECT COALESCE(SUM(total_harga), 0) AS total_pemasukan, COUNT(*) AS jumlah_transaksi
+             FROM transaksi ${whereT.length ? 'WHERE ' + whereT.join(' AND ') : ''}`,
+            paramsT
+        ),
+        db.query(
+            `SELECT COALESCE(SUM(jumlah), 0) AS total_pengeluaran, COUNT(*) AS jumlah_pengeluaran
+             FROM pengeluaran ${whereP.length ? 'WHERE ' + whereP.join(' AND ') : ''}`,
+            paramsP
+        )
+    ]);
+
+    const pemasukan = Number(pemasukanRow[0].total_pemasukan);
+    const pengeluaran = Number(pengeluaranRow[0].total_pengeluaran);
+
+    res.json({
+        periode: { dari: dari || null, sampai: sampai || null },
+        pemasukan,
+        pengeluaran,
+        laba_bersih: pemasukan - pengeluaran,
+        jumlah_transaksi: pemasukanRow[0].jumlah_transaksi,
+        jumlah_pengeluaran: pengeluaranRow[0].jumlah_pengeluaran
+    });
+});
+
+// Laba/rugi per hari dalam rentang periode
+// GET /api/keuangan/grafik?hari=30
+app.get('/api/keuangan/grafik', async (req, res) => {
+    const hari = Math.min(Math.max(parseInt(req.query.hari) || 30, 1), 90);
+
+    const [pemasukan] = await db.query(
+        `SELECT DATE_FORMAT(tanggal, '%Y-%m-%d') AS tanggal, COALESCE(SUM(total_harga), 0) AS pemasukan
+         FROM transaksi WHERE tanggal >= CURDATE() - INTERVAL ? DAY
+         GROUP BY DATE_FORMAT(tanggal, '%Y-%m-%d')`, [hari - 1]
+    );
+    const [pengeluaran] = await db.query(
+        `SELECT DATE_FORMAT(tanggal, '%Y-%m-%d') AS tanggal, COALESCE(SUM(jumlah), 0) AS pengeluaran
+         FROM pengeluaran WHERE tanggal >= CURDATE() - INTERVAL ? DAY
+         GROUP BY DATE_FORMAT(tanggal, '%Y-%m-%d')`, [hari - 1]
+    );
+
+    const mapIn = new Map(pemasukan.map(r => [r.tanggal, Number(r.pemasukan)]));
+    const mapOut = new Map(pengeluaran.map(r => [r.tanggal, Number(r.pengeluaran)]));
+
+    const pad = n => String(n).padStart(2, '0');
+    const hasil = [];
+    for (let i = hari - 1; i >= 0; i--) {
+        const d = new Date();
+        d.setDate(d.getDate() - i);
+        const k = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+        const masuk = mapIn.get(k) || 0;
+        const keluar = mapOut.get(k) || 0;
+        hasil.push({ tanggal: k, pemasukan: masuk, pengeluaran: keluar, laba: masuk - keluar });
+    }
+    res.json(hasil);
+});
+
+// Edit pengeluaran
+// PUT /api/pengeluaran/:id
+app.put('/api/pengeluaran/:id', async (req, res) => {
+    const { id } = req.params;
+    const [rows] = await db.query('SELECT * FROM pengeluaran WHERE id = ?', [id]);
+    if (rows.length === 0) throw httpError(404, 'Pengeluaran tidak ditemukan');
+
+    const lama = rows[0];
+    const keterangan = req.body.keterangan ?? lama.keterangan;
+    const jumlah = req.body.jumlah !== undefined ? Number(req.body.jumlah) : lama.jumlah;
+    const tanggal = req.body.tanggal ?? lama.tanggal;
+
+    if (!keterangan || !keterangan.trim()) throw httpError(400, 'Keterangan wajib diisi');
+    if (!Number.isFinite(jumlah) || jumlah <= 0) throw httpError(400, 'Jumlah harus lebih dari 0');
+
+    await db.query(
+        'UPDATE pengeluaran SET keterangan=?, jumlah=?, tanggal=? WHERE id=?',
+        [keterangan.trim(), jumlah, tanggal, id]
+    );
+    res.json({ message: 'Pengeluaran berhasil diperbarui' });
 });
 
 // =====================================================
